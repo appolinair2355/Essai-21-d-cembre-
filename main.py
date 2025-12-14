@@ -18,6 +18,7 @@ from config import (
     DEFAULT_K, DEFAULT_A, DEFAULT_R, DEFAULT_ECART, MAX_GAME_NUMBER
 )
 
+# Configuration du logging
 logging.basicConfig(
     level=logging.INFO,
     format='%(asctime)s - %(levelname)s - %(message)s',
@@ -25,6 +26,7 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
+# Vérification des variables d'environnement
 if not API_ID or API_ID == 0:
     logger.error("API_ID manquant")
     exit(1)
@@ -37,10 +39,11 @@ if not BOT_TOKEN:
 
 logger.info(f"Configuration: SOURCE_1={SOURCE_CHANNEL_1_ID}, SOURCE_2={SOURCE_CHANNEL_2_ID}, PREDICTION={PREDICTION_CHANNEL_ID}")
 
+# Initialisation du client Telegram
 session_string = os.getenv('TELEGRAM_SESSION', '')
 client = TelegramClient(StringSession(session_string), API_ID, API_HASH)
 
-# Timezone WAT (West Africa Time, UTC+1) - même fuseau que le Bénin
+# Timezone WAT (West Africa Time, UTC+1)
 WAT_TZ = timezone(timedelta(hours=1))
 
 # Variables globales d'état
@@ -49,23 +52,26 @@ processed_messages = set()
 current_game_number = 0
 last_predicted_game = 0
 
-# Paramètres configurables
-k_position = DEFAULT_K          # Position de la carte à utiliser (1, 2, 3...)
-a_offset = DEFAULT_A            # Offset pour la prédiction (N+a)
-r_offset = DEFAULT_R            # Nombre d'essais de vérification (0 à 10)
-ecart_list = []                 # Liste des écarts personnalisés
-ecart_index = 0                 # Index actuel dans la liste des écarts
-intelligent_mode = False        # Mode intelligent (règle inter): prédit la carte exacte à position k
-admin_notifications = True      # Envoyer les notifications au chat privé admin
+# Paramètres configurables (chargés ou par défaut)
+k_position = DEFAULT_K
+a_offset = DEFAULT_A
+r_offset = DEFAULT_R
+ecart_list = []
+ecart_index = 0
+intelligent_mode = False
+admin_notifications = True
 
 # Flags d'état des canaux
 source_channel_1_ok = False
 source_channel_2_ok = False
 prediction_channel_ok = False
-transfer_enabled = True
+transfer_enabled = True # Reste à True
 
 # Fichier de configuration persistante
 CONFIG_FILE = 'bot_config.json'
+
+# Fonctions de gestion de la configuration (save/load_config)
+# ... (Fonctions inchangées) ...
 
 def save_config():
     """Sauvegarde la configuration dans un fichier JSON."""
@@ -106,6 +112,9 @@ def load_config():
     except Exception as e:
         logger.error(f"Erreur chargement config: {e}")
 
+# Fonctions utilitaires (extraction, règles, écarts)
+# ... (Fonctions inchangées) ...
+
 def extract_game_number(message: str):
     """Extrait le numéro de jeu du message."""
     match = re.search(r"#N\s*(\d+)\.?", message, re.IGNORECASE)
@@ -132,7 +141,6 @@ def get_suit_at_position(group_str: str, position: int) -> str:
     """
     Extrait la couleur à la position k dans le premier groupe.
     Position commence à 1.
-    Exemple: "10♦️5♥️J♣️" avec position=1 retourne ♦, position=2 retourne ♥, position=3 retourne ♣
     """
     normalized = normalize_suits(group_str)
     suits_found = []
@@ -157,7 +165,6 @@ def has_suit_in_group(group_str: str, target_suit: str) -> bool:
 def get_current_time_slot():
     """
     Détermine la plage horaire actuelle selon l'heure béninoise (WAT).
-    Retourne: 'morning' (00h-12h), 'afternoon' (13h-19h), 'evening' (19h01-23h59)
     """
     now = datetime.now(WAT_TZ)
     hour = now.hour
@@ -189,7 +196,6 @@ def get_prediction_rules():
 def predict_suit(source_suit: str) -> str:
     """
     Applique les règles de prédiction selon l'heure béninoise.
-    Prend la couleur source à la position k et retourne la couleur prédite.
     """
     rules = get_prediction_rules()
     normalized = normalize_suits(source_suit)
@@ -225,7 +231,6 @@ def is_message_finalized(message: str) -> bool:
 def can_predict_game(game_number: int) -> bool:
     """
     Vérifie si on peut prédire pour ce numéro de jeu.
-    Évite les prédictions pour des numéros consécutifs (écart minimum).
     """
     global last_predicted_game
     ecart = get_current_ecart()
@@ -238,6 +243,9 @@ def can_predict_game(game_number: int) -> bool:
     
     return False
 
+# Fonctions de gestion du flux (send/update/check)
+# ... (Fonctions inchangées) ...
+
 async def send_prediction_to_channel(target_game: int, predicted_suit: str):
     """Envoie la prédiction au canal de prédiction."""
     global last_predicted_game
@@ -249,13 +257,17 @@ async def send_prediction_to_channel(target_game: int, predicted_suit: str):
         
         if PREDICTION_CHANNEL_ID and PREDICTION_CHANNEL_ID != 0 and prediction_channel_ok:
             try:
-                pred_msg = await client.send_message(PREDICTION_CHANNEL_ID, prediction_msg)
+                # Assurez-vous que l'entité existe
+                channel_entity = await client.get_entity(PREDICTION_CHANNEL_ID)
+                pred_msg = await client.send_message(channel_entity, prediction_msg)
                 msg_id = pred_msg.id
                 logger.info(f"✅ Prédiction #{target_game} envoyée au canal (msg_id: {msg_id})")
             except Exception as e:
                 logger.error(f"❌ Erreur envoi prédiction #{target_game}: {e}")
+                # Si l'envoi échoue, on continue le process pour mettre la prédiction en attente,
+                # mais le message_id sera 0.
         else:
-            logger.warning(f"⚠️ Canal de prédiction non accessible")
+            logger.warning(f"⚠️ Canal de prédiction non accessible ou ID invalide")
         
         pending_predictions[target_game] = {
             'message_id': msg_id,
@@ -292,14 +304,17 @@ async def update_prediction_status(game_number: int, new_status: str):
         
         if PREDICTION_CHANNEL_ID and PREDICTION_CHANNEL_ID != 0 and message_id > 0 and prediction_channel_ok:
             try:
-                await client.edit_message(PREDICTION_CHANNEL_ID, message_id, updated_msg)
+                # Assurez-vous que l'entité existe
+                channel_entity = await client.get_entity(PREDICTION_CHANNEL_ID)
+                await client.edit_message(channel_entity, message_id, updated_msg)
                 logger.info(f"✅ Prédiction #{game_number} mise à jour: {new_status}")
             except Exception as e:
-                logger.error(f"❌ Erreur mise à jour: {e}")
+                logger.error(f"❌ Erreur mise à jour: {e} (msg ID: {message_id})")
         
         pred['status'] = new_status
         
         if new_status.startswith('✅') or new_status == '❌':
+            # Supprimer la prédiction de la liste active une fois le statut final atteint
             del pending_predictions[game_number]
             logger.info(f"Prédiction #{game_number} terminée")
         
@@ -332,6 +347,7 @@ async def check_prediction_result(game_number: int, first_group: str):
         check_count = pred.get('check_count', 0)
         max_checks = pred.get('max_checks', r_offset + 1)
         
+        # Le jeu attendu est le jeu de prédiction (PredGame) plus le nombre d'essais déjà effectués
         expected_game = pred_game + check_count
         
         logger.debug(f"Prédiction #{pred_game}: attend jeu #{expected_game} (N+{check_count}), reçu #{game_number}")
@@ -339,18 +355,28 @@ async def check_prediction_result(game_number: int, first_group: str):
         if game_number == expected_game:
             logger.info(f"Match trouvé! Vérification de {suit_display} dans '{first_group}'")
             if has_suit_in_group(first_group, target_suit):
+                # SUCCÈS
                 success_emoji = VERIFICATION_EMOJIS.get(check_count, f"✅{check_count}️⃣")
                 await update_prediction_status(pred_game, success_emoji)
                 logger.info(f"✅ Prédiction #{pred_game} réussie à N+{check_count} - Statut: {success_emoji}")
             else:
+                # ÉCHEC, on passe à l'essai suivant (N+check_count + 1)
                 pred['check_count'] = check_count + 1
                 
                 if pred['check_count'] >= max_checks:
+                    # ÉCHEC DÉFINITIF
                     await update_prediction_status(pred_game, '❌')
                     logger.info(f"❌ Prédiction #{pred_game} échouée après {max_checks} vérifications")
                 else:
+                    # EN ATTENTE du prochain jeu de vérification
                     logger.info(f"⏳ Prédiction #{pred_game}: vérification {check_count + 1}/{max_checks}, attente N+{check_count + 1}")
 
+
+### Étape 2 : Routage et Logique de Prédiction
+
+Cette section contient les fonctions de traitement des messages et les gestionnaires d'événements mis à jour pour assurer un routage fiable entre les canaux.
+
+```python
 async def process_source_1_message(message_text: str, chat_id: int):
     """
     Traite les messages du canal source 1 (pour les prédictions).
@@ -368,6 +394,7 @@ async def process_source_1_message(message_text: str, chat_id: int):
         
         current_game_number = game_number
         
+        # Vérification du hash pour éviter le double traitement
         message_hash = f"src1_{game_number}_{message_text[:50]}"
         if message_hash in processed_messages:
             return
@@ -378,15 +405,17 @@ async def process_source_1_message(message_text: str, chat_id: int):
         
         groups = extract_parentheses_groups(message_text)
         if len(groups) < 1:
+            logger.warning(f"Jeu #{game_number}: Pas de groupe de parenthèses trouvé pour la prédiction.")
             return
         
         first_group = groups[0]
         
         source_suit = get_suit_at_position(first_group, k_position)
         if source_suit is None:
-            logger.warning(f"Impossible de trouver une carte à la position {k_position} dans {first_group}")
+            logger.warning(f"Jeu #{game_number}: Impossible de trouver une carte à la position {k_position} dans {first_group}")
             return
         
+        # Logique de prédiction (Mode Intelligent ou Statique)
         if intelligent_mode:
             predicted_suit = source_suit
         else:
@@ -409,8 +438,10 @@ async def process_source_1_message(message_text: str, chat_id: int):
         
         logger.info(f"Jeu #{game_number} - Position k={k_position}: {source_display} -> Prédiction: {predicted_display} pour #{target_game} (mode: {mode_str})")
         
+        # Envoi de la prédiction au canal configuré
         await send_prediction_to_channel(target_game, predicted_suit)
         
+        # Notification Admin
         if ADMIN_ID and ADMIN_ID != 0 and admin_notifications:
             try:
                 now = datetime.now(WAT_TZ)
@@ -449,6 +480,7 @@ async def process_source_2_message(message_text: str, chat_id: int):
         
         current_game_number = game_number
         
+        # Vérification du hash pour éviter le double traitement
         message_hash = f"src2_{game_number}_{message_text[:50]}"
         if message_hash in processed_messages:
             return
@@ -456,12 +488,14 @@ async def process_source_2_message(message_text: str, chat_id: int):
         
         groups = extract_parentheses_groups(message_text)
         if len(groups) < 1:
+            logger.warning(f"Jeu #{game_number} (Source 2): Pas de groupe de parenthèses trouvé pour la vérification.")
             return
         
         first_group = groups[0]
         
         logger.info(f"Vérification Jeu #{game_number} - Groupe1: {first_group}")
         
+        # Déclenche la vérification des prédictions actives
         await check_prediction_result(game_number, first_group)
         
     except Exception as e:
@@ -471,22 +505,31 @@ async def process_source_2_message(message_text: str, chat_id: int):
 
 @client.on(events.NewMessage())
 async def handle_all_messages(event):
-    """Gestionnaire global pour tous les messages - debug et routage."""
+    """
+    MODIFIÉ: Gestionnaire global pour tous les messages.
+    Utilise abs(ID) pour un routage fiable entre les canaux.
+    """
     try:
         chat_id = event.chat_id
         message_text = event.message.text if event.message and event.message.text else ""
         
-        logger.debug(f"[DEBUG] Message reçu de chat_id={chat_id}: {message_text[:100] if message_text else 'NO TEXT'}")
+        # Utiliser la valeur absolue de l'ID du chat pour correspondre aux ID négatifs configurés
+        abs_chat_id = abs(chat_id)
+
+        logger.debug(f"[DEBUG] Message reçu de chat_id={chat_id} (abs={abs_chat_id}): {message_text[:100] if message_text else 'NO TEXT'}")
         
-        if chat_id == SOURCE_CHANNEL_1_ID or chat_id == abs(SOURCE_CHANNEL_1_ID):
+        # Routage vers le processeur Source 1
+        if abs_chat_id == abs(SOURCE_CHANNEL_1_ID):
             logger.info(f"[SOURCE 1] Message reçu: {message_text[:100]}")
             if message_text:
                 await process_source_1_message(message_text, chat_id)
-        elif chat_id == SOURCE_CHANNEL_2_ID or chat_id == abs(SOURCE_CHANNEL_2_ID):
+        # Routage vers le processeur Source 2
+        elif abs_chat_id == abs(SOURCE_CHANNEL_2_ID):
             logger.info(f"[SOURCE 2] Message reçu: {message_text[:100]}")
             if message_text:
                 await process_source_2_message(message_text, chat_id)
-        elif chat_id == PREDICTION_CHANNEL_ID or chat_id == abs(PREDICTION_CHANNEL_ID):
+        # Ignorer les messages du canal de prédiction
+        elif abs_chat_id == abs(PREDICTION_CHANNEL_ID):
             logger.debug(f"[PREDICTION] Message ignoré (propre canal)")
         else:
             pass
@@ -495,25 +538,35 @@ async def handle_all_messages(event):
 
 @client.on(events.Raw())
 async def handle_raw_updates(event):
-    """Capture les mises à jour brutes pour le débogage."""
+    """
+    MODIFIÉ: Capture les mises à jour brutes (pour les canaux très actifs) et les achemine.
+    Utilise abs(ID) pour la fiabilité du routage.
+    """
     try:
         from telethon.tl.types import UpdateNewChannelMessage
         if isinstance(event, UpdateNewChannelMessage):
             msg = event.message
-            chat_id = getattr(msg.peer_id, 'channel_id', None)
-            if chat_id:
-                chat_id_full = -int(f"100{chat_id}")
+            channel_id_raw = getattr(msg.peer_id, 'channel_id', None)
+            
+            if channel_id_raw:
+                # Reconstruire l'ID complet négatif (format -100xxxxxx)
+                chat_id_full = -int(f"100{channel_id_raw}")
                 text = getattr(msg, 'message', '')
-                logger.info(f"[RAW] UpdateNewChannelMessage - channel_id={chat_id}, full_id={chat_id_full}, text={text[:80] if text else 'NO TEXT'}")
+                logger.debug(f"[RAW] UpdateNewChannelMessage - full_id={chat_id_full}, text={text[:40] if text else 'NO TEXT'}")
                 
-                if chat_id_full == SOURCE_CHANNEL_1_ID and text:
+                # Routage
+                if abs(chat_id_full) == abs(SOURCE_CHANNEL_1_ID) and text:
                     logger.info(f"[RAW->SOURCE1] Traitement du message")
                     await process_source_1_message(text, chat_id_full)
-                elif chat_id_full == SOURCE_CHANNEL_2_ID and text:
+                elif abs(chat_id_full) == abs(SOURCE_CHANNEL_2_ID) and text:
                     logger.info(f"[RAW->SOURCE2] Traitement du message")
                     await process_source_2_message(text, chat_id_full)
     except Exception as e:
         logger.error(f"Erreur raw update: {e}")
+
+
+# Fonctions des commandes d'administration (commandes /k, /a, /r, /eca, /inter, /stop, /status, /reset, /help, /deploy)
+# ... (Fonctions inchangées) ...
 
 @client.on(events.NewMessage(pattern=r'^/k\s*(\d+)$'))
 async def cmd_k(event):
@@ -866,6 +919,11 @@ async def cmd_deploy(event):
 • render.yaml - Configuration Render.com
 • README_DEPLOY.md - Instructions détaillées""")
 
+### Étape 3 : Serveur Web et Démarrage du Bot
+
+Cette section contient le code pour le serveur web (nécessaire pour l'hébergement), les tâches planifiées et la fonction principale de démarrage du bot.
+
+```python
 async def download_zip(request):
     """Route pour télécharger le fichier ZIP déployable."""
     files_to_include = [
@@ -878,13 +936,27 @@ async def download_zip(request):
     
     zip_buffer = io.BytesIO()
     with zipfile.ZipFile(zip_buffer, 'w', zipfile.ZIP_DEFLATED) as zf:
-        for filename in files_to_include:
-            if os.path.exists(filename):
-                with open(filename, 'r', encoding='utf-8') as f:
-                    content = f.read()
-                if filename == 'config.py':
-                    content = content.replace(f"PORT = int(os.getenv('PORT') or '5000')", "PORT = int(os.getenv('PORT') or '10000')")
-                zf.writestr(filename, content)
+        # Lire et inclure main.py (le code actuel)
+        zf.writestr('main.py', open('main.py', 'r', encoding='utf-8').read())
+        
+        # Lire et inclure config.py
+        zf.writestr('config.py', open('config.py', 'r', encoding='utf-8').read())
+        
+        # Créer des fichiers de déploiement par défaut si non existants
+        if not os.path.exists('requirements.txt'):
+             zf.writestr('requirements.txt', 'telethon\naiohttp\n')
+        else:
+             zf.writestr('requirements.txt', open('requirements.txt', 'r', encoding='utf-8').read())
+
+        if not os.path.exists('render.yaml'):
+             zf.writestr('render.yaml', 'services:\n- type: web\n  name: bot-prediction\n  env: python\n  buildCommand: pip install -r requirements.txt\n  startCommand: python main.py\n  port: 10000\n')
+        else:
+             zf.writestr('render.yaml', open('render.yaml', 'r', encoding='utf-8').read())
+
+        if not os.path.exists('README_DEPLOY.md'):
+             zf.writestr('README_DEPLOY.md', "# Instructions de Déploiement...")
+        else:
+             zf.writestr('README_DEPLOY.md', open('README_DEPLOY.md', 'r', encoding='utf-8').read())
     
     zip_buffer.seek(0)
     
@@ -956,13 +1028,14 @@ async def schedule_daily_reset():
         logger.warning("✅ Données réinitialisées pour le nouveau cycle")
 
 async def start_bot():
-    """Démarre le client Telegram."""
+    """Démarre le client Telegram et vérifie l'accès aux canaux."""
     global source_channel_1_ok, source_channel_2_ok, prediction_channel_ok
     try:
         await client.start(bot_token=BOT_TOKEN)
         
         logger.info("Bot connecté. Vérification des accès aux canaux...")
         
+        # Vérification Canal 1
         try:
             entity1 = await client.get_entity(SOURCE_CHANNEL_1_ID)
             source_channel_1_ok = True
@@ -971,6 +1044,7 @@ async def start_bot():
             source_channel_1_ok = False
             logger.error(f"❌ Canal source 1 ({SOURCE_CHANNEL_1_ID}) non accessible: {e}")
         
+        # Vérification Canal 2
         try:
             entity2 = await client.get_entity(SOURCE_CHANNEL_2_ID)
             source_channel_2_ok = True
@@ -979,6 +1053,7 @@ async def start_bot():
             source_channel_2_ok = False
             logger.error(f"❌ Canal source 2 ({SOURCE_CHANNEL_2_ID}) non accessible: {e}")
         
+        # Vérification Canal Prédiction
         try:
             entity3 = await client.get_entity(PREDICTION_CHANNEL_ID)
             prediction_channel_ok = True
@@ -1000,7 +1075,7 @@ async def start_bot():
 • k={k_position}, a={a_offset}, r={r_offset}
 • Écarts: {ecart_list if ecart_list else f'[défaut: {DEFAULT_ECART}]'}
 
-⚠️ Si un canal est ❌, ajoutez le bot comme administrateur dans ce canal."""
+⚠️ Si un canal est ❌, ajoutez le bot comme administrateur (pour le canal de prédiction) ou assurez-vous qu'il peut lire les messages (pour les canaux sources)."""
                 await client.send_message(ADMIN_ID, status_msg)
             except Exception as e:
                 logger.error(f"Erreur envoi status admin: {e}")
